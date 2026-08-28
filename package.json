@@ -3,12 +3,14 @@
   "version": "1.10.0",
   "description": "Browser extension that adds a filter for some streaming services to letterboxd.com",
   "main": "worker.js",
+  "type": "module",
   "dependencies": {
     "@types/chrome": "0.0.127",
     "npm": "^11.17.0"
   },
   "scripts": {
-    "build": "./tools/build.sh"
+    "build": "./tools/build.sh",
+    "lint": "eslint ."
   },
   "repository": {
     "type": "git",
@@ -19,5 +21,10 @@
   "bugs": {
     "url": "https://github.com/adlerzei/letterboxd-streaming-providers/issues"
   },
-  "homepage": "https://github.com/adlerzei/letterboxd-streaming-providers#readme"
+  "homepage": "https://github.com/adlerzei/letterboxd-streaming-providers#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0"
+  }
 }

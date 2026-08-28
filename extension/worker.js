@@ -221,7 +221,7 @@ async function loadSettingsAndExecute(callback) {
 browser.runtime.onInstalled.addListener(() => onStartUp());
 browser.runtime.onStartup.addListener(() => onStartUp());
 
-browser.runtime.onMessage.addListener((request, sender, _) => {
+browser.runtime.onMessage.addListener((request, sender) => {
 	loadSettingsAndExecute(() => handleMessage(request, sender));
 });
 
@@ -234,7 +234,7 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tabInfo) => {
 	loadSettingsAndExecute(() => processLetterboxdTab(tabId));
 });
 
-browser.storage.local.onChanged.addListener(_ => {
+browser.storage.local.onChanged.addListener(() => {
 	settingsLoaded = false;
 	loadSettingsAndExecute(() => reloadMovieFilter());
 });
@@ -492,7 +492,7 @@ async function handleUnsolvedRequests() {
 		try {
 			const tab = await browser.tabs.get(Number(tabId));
 			isValidTab = isProcessableLetterboxdTab(tab);
-		} catch (e) {
+		} catch {
 			// Tab no longer exists
 		}
 
@@ -662,6 +662,9 @@ function fadeUnstreamableMovies(tabId, movies) {
  * @param {string} fadeClass - Class to add for fading.
  * @param {number[]} movieIds - Array of movie indices to fade.
  */
+/* global document -- this function is injected into the Letterboxd page via
+   chrome.scripting.executeScript({ func }) and runs in that page's DOM, not
+   in this service worker's own global scope. */
 function fadeOutMovies(className, fallbackClassName, fadeClass, movieIds) {
 	let filmposters = document.body.getElementsByClassName(className);
 	if (filmposters.length === 0) {
