@@ -8,7 +8,8 @@
     "npm": "^11.17.0"
   },
   "scripts": {
-    "build": "./tools/build.sh"
+    "build": "./tools/build.sh",
+    "test": "node --test 'test/**/*.test.js'"
   },
   "repository": {
     "type": "git",

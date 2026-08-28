@@ -1,7 +1,11 @@
 "use strict";
 
 // for compatibility reasons
-const browser = chrome;
+// Falls back to an empty object when `chrome` is not a global (e.g. when this
+// file is required under plain Node for unit testing). In a real Chrome or
+// Firefox extension context `chrome` is always defined, so this preserves the
+// exact previous behavior there.
+const browser = typeof chrome !== 'undefined' ? chrome : {};
 
 /////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////// CONSTANTS /////////////////////////////////////////////////
@@ -218,14 +222,19 @@ async function loadSettingsAndExecute(callback) {
 /////////////////////////// EVENT LISTENER //////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////
 
-browser.runtime.onInstalled.addListener(() => onStartUp());
-browser.runtime.onStartup.addListener(() => onStartUp());
+// Optional chaining on `browser.*` here (instead of assuming the real extension
+// APIs exist) lets this file be `require()`d under plain Node - where `browser`
+// is `{}` - without throwing, purely so its pure/testable functions can be unit
+// tested. These listeners are always present in a real Chrome or Firefox
+// extension context, so behavior there is unchanged.
+browser.runtime?.onInstalled?.addListener?.(() => onStartUp());
+browser.runtime?.onStartup?.addListener?.(() => onStartUp());
 
-browser.runtime.onMessage.addListener((request, sender, _) => {
+browser.runtime?.onMessage?.addListener?.((request, sender, _) => {
 	loadSettingsAndExecute(() => handleMessage(request, sender));
 });
 
-browser.tabs.onUpdated.addListener((tabId, changeInfo, tabInfo) => {
+browser.tabs?.onUpdated?.addListener?.((tabId, changeInfo, tabInfo) => {
 	// Use status from changeInfo as tabInfo.status may not be updated yet when the event fires
 	if (!isProcessableLetterboxdTab({ ...tabInfo, status: changeInfo?.status })) {
 		return;
@@ -234,12 +243,12 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tabInfo) => {
 	loadSettingsAndExecute(() => processLetterboxdTab(tabId));
 });
 
-browser.storage.local.onChanged.addListener(_ => {
+browser.storage?.local?.onChanged?.addListener?.(_ => {
 	settingsLoaded = false;
 	loadSettingsAndExecute(() => reloadMovieFilter());
 });
 
-browser.alarms.onAlarm.addListener(alarm => {
+browser.alarms?.onAlarm?.addListener?.(alarm => {
 	if (alarm.name !== "handleUnsolvedRequests") {
 		return;
 	}
@@ -787,4 +796,26 @@ async function safeFetchJson(url, options, context) {
 		console.error(`Failed to parse JSON for ${context}:`, error);
 		return null;
 	}
+}
+
+/////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////// NODE TEST EXPORTS //////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////
+
+// Exposes the pure/testable functions (and the `availableMovies` cache, by
+// reference, so tests can seed/inspect it) to Node's built-in test runner via
+// CommonJS `require()`. `module` is not a global in a real browser extension
+// context (Chrome or Firefox), so this block never executes there and has no
+// effect on production behavior.
+if (typeof module !== 'undefined' && module.exports) {
+	module.exports = {
+		getIdWithReleaseYear,
+		extractMediaInfo,
+		addMovieIfFlatrate,
+		parseSettings,
+		isLetterboxdUrl,
+		isSupportedLetterboxdPage,
+		isProcessableLetterboxdTab,
+		availableMovies,
+	};
 }
