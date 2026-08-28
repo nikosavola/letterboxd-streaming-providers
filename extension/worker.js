@@ -382,6 +382,14 @@ function handleRateLimitError(status, tabId, title, year, id) {
 		return;
 	}
 
+	// unsolvedRequests[tabId] can be gone by the time this in-flight request
+	// resolves (e.g. handleUnsolvedRequests deleted it because the tab is no
+	// longer valid/processable). Nothing tracks this tab anymore, so drop the
+	// retry instead of resurrecting state for it.
+	if (!unsolvedRequests[tabId]) {
+		return;
+	}
+
 	unsolvedRequests[tabId][title] = { year, id };
 	browser.storage.session.set({ unsolved_requests: unsolvedRequests });
 }
@@ -472,7 +480,9 @@ function addMovieIfFlatrate(results, tabId, letterboxdId) {
 		offer.provider_id && offer.provider_id === providerId
 	);
 
-	if (hasProvider) {
+	// availableMovies[tabId] may be gone if the tab's state was torn down while
+	// this request was in flight; skip rather than resurrecting a lone entry.
+	if (hasProvider && availableMovies[tabId]) {
 		availableMovies[tabId].push(...letterboxdId);
 	}
 }
@@ -628,6 +638,14 @@ async function prepareLetterboxdForFading(tabId) {
  * @param {object} movies - The crawled movies.
  */
 function fadeUnstreamableMovies(tabId, movies) {
+	// availableMovies[tabId] can be missing if this runs for a tab whose state
+	// was torn down mid-flight (see handleRateLimitError/addMovieIfFlatrate).
+	// Falling back to an empty array here would fade every movie as
+	// unavailable, which is worse than doing nothing, so bail out instead.
+	if (!availableMovies[tabId]) {
+		return;
+	}
+
 	// Collect all movie IDs that need to be faded
 	const idsToFade = [];
 	for (const movie in movies) {
