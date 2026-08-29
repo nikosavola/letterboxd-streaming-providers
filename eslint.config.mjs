@@ -27,7 +27,7 @@ export default [
 	{
 		// Content scripts and the popup script run in a real DOM (document/window)
 		// plus extension APIs (chrome/browser).
-		files: ["extension/scripts/**/*.js", "extension/popup/popup.js"],
+		files: ["extension/scripts/**/*.js", "extension/popup/**/*.js"],
 		languageOptions: {
 			sourceType: "script",
 			globals: {

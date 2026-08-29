@@ -662,13 +662,15 @@ function fadeUnstreamableMovies(tabId, movies) {
  * @param {string} fadeClass - Class to add for fading.
  * @param {number[]} movieIds - Array of movie indices to fade.
  */
-/* global document -- this function is injected into the Letterboxd page via
-   chrome.scripting.executeScript({ func }) and runs in that page's DOM, not
-   in this service worker's own global scope. */
 function fadeOutMovies(className, fallbackClassName, fadeClass, movieIds) {
-	let filmposters = document.body.getElementsByClassName(className);
+	// Injected into the Letterboxd page via chrome.scripting.executeScript({ func })
+	// and runs in that page's DOM, not in this service worker's own global scope.
+	// Referenced via globalThis so ESLint's no-undef still catches an accidental
+	// `document`/`window` reference anywhere else in this file (a plain
+	// `/* global document */` comment would apply file-wide, not just here).
+	let filmposters = globalThis.document.body.getElementsByClassName(className);
 	if (filmposters.length === 0) {
-		filmposters = document.body.getElementsByClassName(fallbackClassName);
+		filmposters = globalThis.document.body.getElementsByClassName(fallbackClassName);
 	}
 
 	for (const movieId of movieIds) {
@@ -700,9 +702,11 @@ async function unfadeAllMovies(tabId) {
  * @param {string} fadeClass - Class to remove.
  */
 function unfadeMovies(className, fallbackClassName, fadeClass) {
-	let filmposters = document.body.getElementsByClassName(className);
+	// See fadeOutMovies above: injected into the page's DOM, referenced via
+	// globalThis so no-undef stays effective for the rest of this file.
+	let filmposters = globalThis.document.body.getElementsByClassName(className);
 	if (filmposters.length === 0) {
-		filmposters = document.body.getElementsByClassName(fallbackClassName);
+		filmposters = globalThis.document.body.getElementsByClassName(fallbackClassName);
 	}
 
 	for (const poster of filmposters) {

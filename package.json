@@ -3,14 +3,13 @@
   "version": "1.10.0",
   "description": "Browser extension that adds a filter for some streaming services to letterboxd.com",
   "main": "worker.js",
-  "type": "module",
   "dependencies": {
     "@types/chrome": "0.0.127",
     "npm": "^11.17.0"
   },
   "scripts": {
     "build": "./tools/build.sh",
-    "lint": "eslint ."
+    "lint": "eslint . --max-warnings=0"
   },
   "repository": {
     "type": "git",
