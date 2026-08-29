@@ -36,8 +36,21 @@ let crawledMovies = {};
 let unsolvedRequests = {};
 let crawlRetryCount = {};
 
+// Per-tab processing generation, incremented on every new page load of a tab.
+// Used to discard results of in-flight work that belongs to a superseded page.
+// Intentionally kept in memory only: in-flight work never survives a service
+// worker restart, so a restarted worker has no stale sessions to guard against.
+let tabGeneration = {};
+
 let settingsLoaded = false;
 let cacheLoaded = false;
+
+// Single-flight loading of settings and cache, see ensureSettingsAndCacheLoaded()
+let loadingPromise = null;
+// Bumped whenever the stored settings change, so a load that started before the
+// change does not satisfy a caller that needs the new settings.
+let settingsEpoch = 0;
+let loadedEpoch = -1;
 
 /////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////// STARTUP AND SETTINGS //////////////////////////////////////
@@ -198,19 +211,50 @@ async function parseCache(items) {
 }
 
 /**
+ * Reads settings and cache from storage into the module level state.
+ *
+ * @returns {Promise<void>} - Resolves once settings and cache are parsed.
+ */
+async function loadSettingsAndCache() {
+	const [localItems, sessionItems] = await Promise.all([
+		browser.storage.local.get(),
+		browser.storage.session.get()
+	]);
+	await parseSettings(localItems);
+	await parseCache(sessionItems);
+}
+
+/**
+ * Ensures settings and cache are loaded, loading them at most once at a time.
+ *
+ * Concurrent callers (e.g. two Letterboxd tabs waking the same cold service
+ * worker) await the same in-flight load instead of each reading storage and
+ * each overwriting the shared per-tab maps in parseCache().
+ *
+ * @returns {Promise<void>} - Resolves once settings and cache are available.
+ */
+async function ensureSettingsAndCacheLoaded() {
+	while (!settingsLoaded || !cacheLoaded || loadedEpoch < settingsEpoch) {
+		if (!loadingPromise) {
+			const epoch = settingsEpoch;
+			loadingPromise = loadSettingsAndCache()
+				// Record which settings version this load actually observed.
+				.then(() => { loadedEpoch = epoch; })
+				.finally(() => { loadingPromise = null; });
+		}
+		// A load that started before the last settings change does not count as
+		// up to date, so the loop starts a fresh one in that case.
+		await loadingPromise;
+	}
+}
+
+/**
  * Loads settings and cache if not already loaded, then executes the callback function.
  *
  * @param {function} callback - The function to execute after settings and cache are loaded.
  */
 async function loadSettingsAndExecute(callback) {
-	if (!settingsLoaded || !cacheLoaded) {
-		const [localItems, sessionItems] = await Promise.all([
-			browser.storage.local.get(),
-			browser.storage.session.get()
-		]);
-		await parseSettings(localItems);
-		await parseCache(sessionItems);
-	}
+	await ensureSettingsAndCacheLoaded();
 	callback();
 }
 
@@ -234,8 +278,15 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tabInfo) => {
 	loadSettingsAndExecute(() => processLetterboxdTab(tabId));
 });
 
+browser.tabs.onRemoved.addListener(tabId => {
+	// Load first: on a cold service worker the in-memory maps are empty, so
+	// persisting them without loading would wipe every other tab's state.
+	loadSettingsAndExecute(() => clearTabState(tabId));
+});
+
 browser.storage.local.onChanged.addListener(_ => {
 	settingsLoaded = false;
+	settingsEpoch++;
 	loadSettingsAndExecute(() => reloadMovieFilter());
 });
 
@@ -320,18 +371,63 @@ async function checkMovieAvailability(tabId, movies) {
 		return;
 	}
 
+	// Everything below belongs to the page load that is current right now. If the
+	// tab navigates to another supported page in the meantime, this session is
+	// superseded and its results must not touch the new page's state.
+	const generation = currentTabGeneration(tabId);
+
 	prepareLetterboxdForFading(tabId);
 
 	const CONCURRENCY_LIMIT = 5;
 	const entries = Object.entries(movies);
 	for (let i = 0; i < entries.length; i += CONCURRENCY_LIMIT) {
+		if (!isCurrentTabGeneration(tabId, generation)) {
+			// Superseded by a newer page load, stop issuing requests for this one.
+			return;
+		}
+
 		const batch = entries.slice(i, i + CONCURRENCY_LIMIT);
 		await Promise.all(batch.map(([title, data]) =>
-			checkMovie(tabId, title, data.year, data.id)
+			checkMovie(tabId, title, data.year, data.id, generation)
 		));
+
+		// Persist after every batch: the service worker can be terminated at any
+		// point, and everything found so far has to survive the restart.
+		await persistAvailableMovies();
 	}
 
-	fadeUnstreamableMovies(tabId, movies);
+	fadeUnstreamableMovies(tabId, movies, generation);
+}
+
+/**
+ * Persists the available movies of all tabs for later service worker cycles.
+ *
+ * @returns {Promise<void>} - Resolves once the state is written.
+ */
+function persistAvailableMovies() {
+	return browser.storage.session.set({ available_movies: availableMovies });
+}
+
+/**
+ * Returns the current processing generation of a tab.
+ * A tab without a known generation is treated as generation 0.
+ *
+ * @param {number|string} tabId - The tab ID.
+ * @returns {number} - The tab's current generation.
+ */
+function currentTabGeneration(tabId) {
+	return tabGeneration[tabId] ?? 0;
+}
+
+/**
+ * Checks whether a captured generation still refers to the tab's current page load.
+ *
+ * @param {number|string} tabId - The tab ID.
+ * @param {number} generation - The generation captured when the work started.
+ * @returns {boolean} - True if no newer page load superseded the captured one.
+ */
+function isCurrentTabGeneration(tabId, generation) {
+	return currentTabGeneration(tabId) === generation;
 }
 
 /**
@@ -341,15 +437,16 @@ async function checkMovieAvailability(tabId, movies) {
  * @param {string} title - The movie title.
  * @param {number} year - The release year.
  * @param {Array} letterboxdId - The Letterboxd-intern array id.
+ * @param {number} generation - The tab generation this check belongs to.
  */
-async function checkMovie(tabId, title, year, letterboxdId) {
+async function checkMovie(tabId, title, year, letterboxdId, generation) {
 	const titleSanitized = encodeURIComponent(title);
 
 	// Search for the movie
 	const searchUrl = `https://api.themoviedb.org/3/search/multi?query=${titleSanitized}`;
 	const searchResult = await safeFetchJson(searchUrl, fetchOptions, `TMDB search for '${title}' (${year})`);
 	if (searchResult?.json == null) {
-		handleRateLimitError(searchResult?.status, tabId, title, year, letterboxdId);
+		handleRateLimitError(searchResult?.status, tabId, title, year, letterboxdId, generation);
 		return;
 	}
 	const tmdbInfo = getIdWithReleaseYear(searchResult.json.results, title, year);
@@ -362,10 +459,10 @@ async function checkMovie(tabId, title, year, letterboxdId) {
 	const providerUrl = `https://api.themoviedb.org/3/${tmdbInfo.mediaType}/${tmdbInfo.tmdbId}/watch/providers`;
 	const providerResult = await safeFetchJson(providerUrl, fetchOptions, `TMDB providers for '${title}' (${year})`);
 	if (providerResult?.json == null) {
-		handleRateLimitError(providerResult?.status, tabId, title, year, letterboxdId);
+		handleRateLimitError(providerResult?.status, tabId, title, year, letterboxdId, generation);
 		return;
 	}
-	addMovieIfFlatrate(providerResult.json.results, tabId, letterboxdId);
+	addMovieIfFlatrate(providerResult.json.results, tabId, letterboxdId, generation);
 }
 
 /**
@@ -376,9 +473,17 @@ async function checkMovie(tabId, title, year, letterboxdId) {
  * @param {string} title - Movie title.
  * @param {number} year - Release year.
  * @param {Array} id - Letterboxd IDs.
+ * @param {number} generation - The tab generation this request belongs to.
  */
-function handleRateLimitError(status, tabId, title, year, id) {
+function handleRateLimitError(status, tabId, title, year, id, generation) {
 	if (status !== 429) {
+		return;
+	}
+
+	// The request was issued for a page load that has since been superseded. Its
+	// Letterboxd IDs refer to the old DOM, so retrying it would corrupt the new
+	// page's state; the new page load checks its own movies anyway.
+	if (!isCurrentTabGeneration(tabId, generation)) {
 		return;
 	}
 
@@ -464,8 +569,16 @@ function extractMediaInfo(item, mediaType) {
  * @param {object} results - The results from the TMDB "Watch Providers" request.
  * @param {number} tabId - The tabId to operate in.
  * @param {Array} letterboxdId - The intern ID from the array in letterboxd.com.
+ * @param {number} generation - The tab generation this result belongs to.
  */
-function addMovieIfFlatrate(results, tabId, letterboxdId) {
+function addMovieIfFlatrate(results, tabId, letterboxdId, generation) {
+	// This result was computed for a page load that has since been superseded.
+	// Its Letterboxd IDs index the old page's DOM, so discard it instead of
+	// mixing it into the new page's availability data.
+	if (!isCurrentTabGeneration(tabId, generation)) {
+		return;
+	}
+
 	const countryData = results[countryCode];
 	if (!countryData) {
 		return;
@@ -497,20 +610,33 @@ async function handleUnsolvedRequests() {
 			continue;
 		}
 
-		// Check if tab is still valid and processable
-		let isValidTab = false;
+		// Check if the tab still exists and is processable right now
+		let tabExists = false;
+		let isProcessable = false;
 		try {
 			const tab = await browser.tabs.get(Number(tabId));
-			isValidTab = isProcessableLetterboxdTab(tab);
+			tabExists = true;
+			isProcessable = isProcessableLetterboxdTab(tab);
 		} catch (e) {
 			// Tab no longer exists
 		}
 
-		if (!isValidTab) {
-			delete unsolvedRequests[tabId];
-			browser.storage.session.set({ unsolved_requests: unsolvedRequests });
+		if (!tabExists) {
+			// The tab is really gone. tabs.onRemoved usually cleans this up, but
+			// the service worker may have been asleep when the tab was closed.
+			clearTabState(tabId);
 			continue;
 		}
+
+		if (!isProcessable) {
+			// The tab exists but is momentarily not processable, e.g. discarded by
+			// the browser's memory saver or in the middle of a reload. Keep its
+			// pending retries so they can still be handled later on.
+			continue;
+		}
+
+		// Everything below belongs to the tab's current page load
+		const generation = currentTabGeneration(tabId);
 
 		// Clear unsolved requests for this tab before retrying
 		const moviesToRetry = { ...tabRequests };
@@ -519,12 +645,15 @@ async function handleUnsolvedRequests() {
 
 		// Retry all failed movies and wait for completion
 		const retryPromises = Object.entries(moviesToRetry).map(([title, data]) =>
-			checkMovie(Number(tabId), title, data.year, data.id)
+			checkMovie(Number(tabId), title, data.year, data.id, generation)
 		);
 		await Promise.all(retryPromises);
 
+		// Persist the retried movies before they are read back for fading
+		await persistAvailableMovies();
+
 		// Re-apply fading with updated availableMovies
-		fadeUnstreamableMovies(Number(tabId), crawledMovies[tabId]);
+		fadeUnstreamableMovies(Number(tabId), crawledMovies[tabId], generation);
 	}
 }
 
@@ -585,6 +714,9 @@ async function processLetterboxdTab(tabId) {
  * @param {number} tabId - The tab ID.
  */
 async function initializeTabState(tabId) {
+	// A new page load supersedes everything that is still in flight for this tab
+	tabGeneration[tabId] = currentTabGeneration(tabId) + 1;
+
 	availableMovies[tabId] = [];
 	crawledMovies[tabId] = {};
 	unsolvedRequests[tabId] = {};
@@ -592,6 +724,27 @@ async function initializeTabState(tabId) {
 
 	// Persist for later service worker cycles
 	await browser.storage.session.set({
+		available_movies: availableMovies,
+		crawled_movies: crawledMovies,
+		unsolved_requests: unsolvedRequests,
+	});
+}
+
+/**
+ * Discards all state of a tab, in memory and in the session storage.
+ * Called once a tab is really gone, so its state does not pile up for the
+ * lifetime of the service worker.
+ *
+ * @param {number|string} tabId - The tab ID.
+ */
+function clearTabState(tabId) {
+	delete availableMovies[tabId];
+	delete crawledMovies[tabId];
+	delete unsolvedRequests[tabId];
+	delete crawlRetryCount[tabId];
+	delete tabGeneration[tabId];
+
+	browser.storage.session.set({
 		available_movies: availableMovies,
 		crawled_movies: crawledMovies,
 		unsolved_requests: unsolvedRequests,
@@ -636,8 +789,15 @@ async function prepareLetterboxdForFading(tabId) {
  *
  * @param {number} tabId - The tabId to operate in.
  * @param {object} movies - The crawled movies.
+ * @param {number} generation - The tab generation this fading belongs to.
  */
-function fadeUnstreamableMovies(tabId, movies) {
+function fadeUnstreamableMovies(tabId, movies, generation) {
+	// The movie IDs of a superseded page load are array indices into the old
+	// page's DOM. Applying them to the new page would fade the wrong posters.
+	if (!isCurrentTabGeneration(tabId, generation)) {
+		return;
+	}
+
 	// availableMovies[tabId] can be missing if this runs for a tab whose state
 	// was torn down mid-flight (see handleRateLimitError/addMovieIfFlatrate).
 	// Falling back to an empty array here would fade every movie as
