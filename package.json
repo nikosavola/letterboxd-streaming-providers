@@ -6,9 +6,6 @@
   "scripts": {
     "build": "./tools/build.sh"
   },
-  "devDependencies": {
-    "@types/chrome": "0.0.127"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/adlerzei/letterboxd-streaming-providers"
@@ -18,5 +15,8 @@
   "bugs": {
     "url": "https://github.com/adlerzei/letterboxd-streaming-providers/issues"
   },
-  "homepage": "https://github.com/adlerzei/letterboxd-streaming-providers#readme"
+  "homepage": "https://github.com/adlerzei/letterboxd-streaming-providers#readme",
+  "devDependencies": {
+    "@types/chrome": "0.0.127"
+  }
 }
