@@ -1,11 +1,7 @@
 "use strict";
 
 // for compatibility reasons
-// Falls back to an empty object when `chrome` is not a global (e.g. when this
-// file is required under plain Node for unit testing). In a real Chrome or
-// Firefox extension context `chrome` is always defined, so this preserves the
-// exact previous behavior there.
-const browser = typeof chrome !== 'undefined' ? chrome : {};
+const browser = chrome;
 
 /////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////// CONSTANTS /////////////////////////////////////////////////
@@ -222,19 +218,14 @@ async function loadSettingsAndExecute(callback) {
 /////////////////////////// EVENT LISTENER //////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////
 
-// Optional chaining on `browser.*` here (instead of assuming the real extension
-// APIs exist) lets this file be `require()`d under plain Node - where `browser`
-// is `{}` - without throwing, purely so its pure/testable functions can be unit
-// tested. These listeners are always present in a real Chrome or Firefox
-// extension context, so behavior there is unchanged.
-browser.runtime?.onInstalled?.addListener?.(() => onStartUp());
-browser.runtime?.onStartup?.addListener?.(() => onStartUp());
+browser.runtime.onInstalled.addListener(() => onStartUp());
+browser.runtime.onStartup.addListener(() => onStartUp());
 
-browser.runtime?.onMessage?.addListener?.((request, sender, _) => {
+browser.runtime.onMessage.addListener((request, sender, _) => {
 	loadSettingsAndExecute(() => handleMessage(request, sender));
 });
 
-browser.tabs?.onUpdated?.addListener?.((tabId, changeInfo, tabInfo) => {
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tabInfo) => {
 	// Use status from changeInfo as tabInfo.status may not be updated yet when the event fires
 	if (!isProcessableLetterboxdTab({ ...tabInfo, status: changeInfo?.status })) {
 		return;
@@ -243,12 +234,12 @@ browser.tabs?.onUpdated?.addListener?.((tabId, changeInfo, tabInfo) => {
 	loadSettingsAndExecute(() => processLetterboxdTab(tabId));
 });
 
-browser.storage?.local?.onChanged?.addListener?.(_ => {
+browser.storage.local.onChanged.addListener(_ => {
 	settingsLoaded = false;
 	loadSettingsAndExecute(() => reloadMovieFilter());
 });
 
-browser.alarms?.onAlarm?.addListener?.(alarm => {
+browser.alarms.onAlarm.addListener(alarm => {
 	if (alarm.name !== "handleUnsolvedRequests") {
 		return;
 	}
@@ -421,7 +412,11 @@ function getIdWithReleaseYear(results, titleEnglish, releaseYear) {
 			continue;
 		}
 
-		const itemReleaseYear = new Date(itemReleaseDate).getFullYear();
+		// TMDb release dates are plain `YYYY-MM-DD` strings. `new Date(...)` would parse
+		// them as UTC midnight but `getFullYear()` reads them back in the host machine's
+		// local timezone, so e.g. "2021-01-01" yields 2020 anywhere west of UTC. Slicing
+		// the year straight out of the string keeps matching timezone-independent.
+		const itemReleaseYear = Number(itemReleaseDate.slice(0, 4));
 
 		if (itemTitle.toLowerCase() !== titleLower) {
 			continue;
@@ -538,7 +533,7 @@ async function handleUnsolvedRequests() {
  * @returns {boolean} - True if URL is a Letterboxd URL.
  */
 function isLetterboxdUrl(url) {
-	return url && LETTERBOXD_PATTERNS.some(pattern => url.includes(pattern));
+	return Boolean(url) && LETTERBOXD_PATTERNS.some(pattern => url.includes(pattern));
 }
 
 /**
@@ -548,7 +543,7 @@ function isLetterboxdUrl(url) {
  * @returns {boolean} - True if URL is a supported page.
  */
 function isSupportedLetterboxdPage(url) {
-	return url && SUPPORTED_PAGES.some(page => url.includes(page));
+	return Boolean(url) && SUPPORTED_PAGES.some(page => url.includes(page));
 }
 
 /**
@@ -802,11 +797,17 @@ async function safeFetchJson(url, options, context) {
 //////////////////////////// NODE TEST EXPORTS //////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////
 
-// Exposes the pure/testable functions (and the `availableMovies` cache, by
-// reference, so tests can seed/inspect it) to Node's built-in test runner via
-// CommonJS `require()`. `module` is not a global in a real browser extension
-// context (Chrome or Firefox), so this block never executes there and has no
-// effect on production behavior.
+// Exposes the pure/testable functions (plus the mutable settings and the
+// `availableMovies` cache, so tests can seed/inspect them) to Node's built-in
+// test runner via CommonJS `require()`. `module` is not a global in a real
+// browser extension context (Chrome or Firefox), so this block never executes
+// there and has no effect on production behavior.
+//
+// The state below is exposed through getters rather than plain properties
+// because these module-level bindings get *reassigned* (e.g. `parseCache` does
+// `availableMovies = items.available_movies ?? {}`). A plain shorthand property
+// would only capture the value as it was at require time and silently detach
+// from the live binding afterwards.
 if (typeof module !== 'undefined' && module.exports) {
 	module.exports = {
 		getIdWithReleaseYear,
@@ -816,6 +817,9 @@ if (typeof module !== 'undefined' && module.exports) {
 		isLetterboxdUrl,
 		isSupportedLetterboxdPage,
 		isProcessableLetterboxdTab,
-		availableMovies,
+		get availableMovies() { return availableMovies; },
+		get countryCode() { return countryCode; },
+		get providerId() { return providerId; },
+		get filterStatus() { return filterStatus; },
 	};
 }

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "./tools/build.sh",
-    "test": "node --test 'test/**/*.test.js'"
+    "test": "node --test"
   },
   "repository": {
     "type": "git",
