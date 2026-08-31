@@ -8,7 +8,8 @@
     "npm": "^11.17.0"
   },
   "scripts": {
-    "build": "./tools/build.sh"
+    "build": "./tools/build.sh",
+    "lint": "eslint . --max-warnings=0"
   },
   "repository": {
     "type": "git",
