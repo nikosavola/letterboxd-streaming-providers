@@ -19,5 +19,10 @@
   "bugs": {
     "url": "https://github.com/adlerzei/letterboxd-streaming-providers/issues"
   },
-  "homepage": "https://github.com/adlerzei/letterboxd-streaming-providers#readme"
+  "homepage": "https://github.com/adlerzei/letterboxd-streaming-providers#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0"
+  }
 }
