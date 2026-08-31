@@ -412,7 +412,11 @@ function getIdWithReleaseYear(results, titleEnglish, releaseYear) {
 			continue;
 		}
 
-		const itemReleaseYear = new Date(itemReleaseDate).getFullYear();
+		// TMDb release dates are plain `YYYY-MM-DD` strings. `new Date(...)` would parse
+		// them as UTC midnight but `getFullYear()` reads them back in the host machine's
+		// local timezone, so e.g. "2021-01-01" yields 2020 anywhere west of UTC. Slicing
+		// the year straight out of the string keeps matching timezone-independent.
+		const itemReleaseYear = Number(itemReleaseDate.slice(0, 4));
 
 		if (itemTitle.toLowerCase() !== titleLower) {
 			continue;
